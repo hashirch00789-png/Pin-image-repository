@@ -6,4 +6,4 @@ services:
     healthCheckPath: /health
     envVars:
       - key: CORS_ORIGINS
-        value: https://dev-pinterest-video-download.pantheonsite.io
+        value: https://pinviddownload.com/pinterest-image-downloader/
