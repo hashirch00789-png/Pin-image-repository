@@ -218,7 +218,7 @@ footer{background:#17171a;color:#aaa;padding:48px 0 24px}.fg{display:grid;grid-t
 <h1>Pinterest Image <span>Downloader</span></h1>
 <p class="lead">Download Pinterest images, photos, and pictures in the best quality available. Paste a public Pinterest Pin link to find supported image files and save them to your device.</p>
 <div class="tool">
-<form id="pvd-form"><label class="sr" for="pvd-url">Pinterest image URL</label><div class="row"><div class="iw"><input id="pvd-url" class="input" type="url" inputmode="url" placeholder="Paste Pinterest image or Pin link here" required></div><button class="download" id="submit" type="submit">Find Images</button></div></form>
+<form id="pvd-form"><label class="sr" for="pvd-url">Pinterest image URL</label><div class="row"><div class="iw"><input id="pvd-url" class="input" type="url" inputmode="url" placeholder="Paste Pinterest image or Pin link here" required></div><button class="download" id="submit" type="submit">Download</button></div></form>
 <div id="status" class="status" role="status" aria-live="polite"></div><div id="result" class="result"></div>
 </div>
 <div class="trust"><span>Free to Use</span><span>No Account Required</span><span>Mobile &amp; Desktop</span><span>Public Pins</span><span>Image Preview</span></div>
@@ -264,11 +264,44 @@ function valid(v){try{const h=new URL(v).hostname.toLowerCase().replace(/^www\./
 function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 function downloadUrl(u){return API_BASE+"/api/download?url="+encodeURIComponent(u)+"&quality=best"}
 function render(media){
- const imgs=(Array.isArray(media)?media:[]).filter(x=>["image","photo","picture","gif"].includes(String(x.type||"").toLowerCase())&&(x.url||x.download_url));
- if(!imgs.length){$("result").innerHTML='<div class="status show info">No image URL was returned for this Pin. Try a public individual image Pin. If this happens for several public Pins, update the Render backend to the image-support version supplied with this page.</div>';$("result").classList.add("show");return}
- $("result").innerHTML='<div class="rhead"><h3>Available Pinterest Images</h3><span>'+imgs.length+' image option'+(imgs.length===1?'':'s')+'</span></div><div class="resultGrid">'+imgs.map((x,i)=>{const u=x.url||x.download_url;const label=x.quality||(x.width&&x.height?`${x.width} × ${x.height}`:`Image ${i+1}`);return '<article class="imageResult"><a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" alt="Pinterest image preview '+(i+1)+'" loading="lazy"></a><div class="imageMeta">'+esc(label)+'</div><a class="dl" href="'+esc(downloadUrl(u))+'" target="_blank" rel="noopener">Download Image</a></article>'}).join('')+'</div>';
- $("result").classList.add("show");msg("Pinterest image media found. Choose an image to download.","success")
+ const imgs=(Array.isArray(media)?media:[]).filter(x=>
+   ["image","photo","picture","gif"].includes(String(x.type||"").toLowerCase()) &&
+   (x.url||x.download_url)
+ );
+ if(!imgs.length){
+   $("result").innerHTML='<div class="status show info">No downloadable image was found for this Pin. Try a public individual Pinterest image Pin.</div>';
+   $("result").classList.add("show");
+   return;
+ }
+
+ // Select one best-available source image: prefer explicit original/best labels,
+ // then use the largest reported dimensions as a fallback.
+ const score=x=>{
+   const q=String(x.quality||x.label||"").toLowerCase();
+   const original=/original|best available|original image|source/.test(q)?1:0;
+   const area=(Number(x.width)||0)*(Number(x.height)||0);
+   const quality=/1080|high|hd|large/.test(q)?1:0;
+   return original*1e15 + area*10 + quality;
+ };
+ const best=imgs.slice().sort((a,b)=>score(b)-score(a))[0];
+ const u=best.url||best.download_url;
+ const preview=u;
+ const file=downloadUrl(u);
+
+ $("result").innerHTML=
+   '<div class="rhead"><h3>Original / Best Available Image</h3><span>1 image</span></div>'+
+   '<div class="singleMedia imageResult">'+
+     '<div class="mi">'+
+       '<a class="preview" href="'+esc(preview)+'" target="_blank" rel="noopener">'+
+         '<img src="'+esc(preview)+'" alt="Original or best available Pinterest image" loading="lazy" style="display:block;width:auto;max-width:100%;max-height:620px;height:auto;object-fit:contain;margin:0 auto;border-radius:10px">'+
+       '</a>'+
+       '<div class="imageMeta">Original / best available</div>'+
+       '<a class="dl" href="'+esc(file)+'" target="_blank" rel="noopener" download>Download Image</a>'+
+     '</div>'+
+   '</div>';
+ $("result").classList.add("show");
+ msg("Best available Pinterest image found. Click Download Image to save it.","success");
 }
 $("pvd-url").addEventListener("input",()=>{$("status").className="status";$ ("status").textContent=""});
-$("pvd-form").addEventListener("submit",async e=>{e.preventDefault();const url=$("pvd-url").value.trim(),b=$("submit");$("result").classList.remove("show");if(!valid(url)){msg("Please enter a valid Pinterest Pin URL or pin.it link.","error");return}b.disabled=true;b.textContent="Finding images...";msg("Checking the public Pin for available images...","info");try{const r=await fetch(API_ENDPOINT,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({url})});const raw=await r.text();let d;try{d=JSON.parse(raw)}catch{throw Error("The server returned an invalid response. Please try again.")}if(!r.ok||d.success===false)throw Error(d.message||d.detail||"The Pinterest link could not be processed.");if(!Array.isArray(d.media)||d.media.length===0){render([]);return}render(d.media)}catch(err){msg(err.message||"Unable to connect to the image downloader. Please try again.","error")}finally{b.disabled=false;b.textContent="Find Images"}});
+$("pvd-form").addEventListener("submit",async e=>{e.preventDefault();const url=$("pvd-url").value.trim(),b=$("submit");$("result").classList.remove("show");if(!valid(url)){msg("Please enter a valid Pinterest Pin URL or pin.it link.","error");return}b.disabled=true;b.textContent="Processing...";msg("Checking the public Pin for available images...","info");try{const r=await fetch(API_ENDPOINT,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({url})});const raw=await r.text();let d;try{d=JSON.parse(raw)}catch{throw Error("The server returned an invalid response. Please try again.")}if(!r.ok||d.success===false)throw Error(d.message||d.detail||"The Pinterest link could not be processed.");if(!Array.isArray(d.media)||d.media.length===0){render([]);return}render(d.media)}catch(err){msg(err.message||"Unable to connect to the image downloader. Please try again.","error")}finally{b.disabled=false;b.textContent="Download"}});
 </script><script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebApplication","name":"Pinterest Image Downloader","url":"https://onlinefontgenerate.com/pinterest-image-downloader/","applicationCategory":"MultimediaApplication","operatingSystem":"Any","description":"A browser-based Pinterest image downloader for finding and downloading supported images from publicly accessible Pin URLs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}},{"@type":"HowTo","name":"How to Download a Picture From Pinterest","step":[{"@type":"HowToStep","name":"Copy the Pinterest Pin link","text":"Open a public Pin and copy its URL."},{"@type":"HowToStep","name":"Paste the URL","text":"Paste the Pin link into the Pinterest image downloader and click Find Images."},{"@type":"HowToStep","name":"Download the image","text":"Preview available image media and select Download Image."}]},{"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do I download images from Pinterest?","acceptedAnswer":{"@type":"Answer","text":"Copy the URL of a public Pinterest Pin, paste it into the downloader, click Find Images, then preview and download an available image."}},{"@type":"Question","name":"Can I download Pinterest images in HD?","acceptedAnswer":{"@type":"Answer","text":"You can download the highest-quality image exposed by the source. A high-resolution option cannot be guaranteed for every Pin."}},{"@type":"Question","name":"Do I need to install an app?","acceptedAnswer":{"@type":"Answer","text":"No. The web tool works in a modern browser on mobile and desktop devices."}}]}</script></body></html>
