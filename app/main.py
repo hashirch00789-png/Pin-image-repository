@@ -17,7 +17,7 @@ from pydantic import BaseModel, HttpUrl
 from playwright.async_api import async_playwright
 
 APP_NAME = "Pinterest Media Resolver"
-VERSION = "1.3.0"
+VERSION = "1.4.1"
 
 ALLOWED_PIN_HOSTS = {
     "pinterest.com", "www.pinterest.com",
