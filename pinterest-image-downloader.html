@@ -161,9 +161,9 @@ footer{background:#17171a;color:#aaa;padding:48px 0 24px}.fg{display:grid;grid-t
 #pvd .status{display:none;margin-top:14px;padding:12px 14px;border-radius:12px;background:#f3f4f6;color:#4b5563}
 #pvd .status.show{display:block}#pvd .status.error{background:#fff0f1;color:#b00020}#pvd .status.success{background:#eaf8ee;color:#176b34}
 #pvd .result{display:none;margin-top:18px}#pvd .result.show{display:block}
-#pvd .resultGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:16px}
-#pvd .imageResult{border:1px solid var(--bd);border-radius:16px;padding:12px;background:#fff;min-width:0}
-#pvd .imageResult img{width:100%;height:240px;object-fit:contain;background:#f7f5f5;border-radius:10px;display:block}
+#pvd .resultGrid{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;margin-top:16px;max-width:760px;margin-left:auto;margin-right:auto}
+#pvd .imageResult{border:1px solid var(--bd);border-radius:16px;padding:16px;background:#fff;min-width:0}
+#pvd .imageResult img{width:100%;height:auto;max-height:720px;object-fit:contain;background:#f7f5f5;border-radius:10px;display:block;margin:auto}
 #pvd .imageResult .imageMeta{font-size:13px;color:var(--mut);margin:10px 0;overflow-wrap:anywhere}
 #pvd .dl{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;background:#e60023;color:#fff!important;padding:10px 14px;border-radius:9px;font-weight:750;font-size:14px}
 #pvd .dl:hover{background:#b9001d}
@@ -187,6 +187,17 @@ footer{background:#17171a;color:#aaa;padding:48px 0 24px}.fg{display:grid;grid-t
 #pvd .pvd-mobile-menu{z-index:99999}
 @media(max-width:900px){#pvd .resultGrid{grid-template-columns:repeat(2,minmax(0,1fr))}#pvd .cards,#pvd .steps{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){#pvd .pvdhero{padding:34px 0 24px}#pvd h1{font-size:38px;letter-spacing:-1.2px}#pvd .lead{font-size:16px}#pvd .row{display:grid;grid-template-columns:1fr}#pvd .download{width:100%}#pvd section{padding:30px 0}#pvd .resultGrid,#pvd .cards,#pvd .steps,#pvd .guide-visual{grid-template-columns:1fr}#pvd .imageResult img{height:auto;max-height:420px}#pvd .tool{padding:12px}}
+
+/* Final single-result override: keep one best image card on all screen sizes. */
+#pvd .resultGrid{grid-template-columns:minmax(0,1fr)!important;max-width:760px;margin-left:auto;margin-right:auto}
+#pvd .imageResult{width:100%;min-width:0}
+#pvd .imageResult img{width:100%;height:auto;max-height:720px;object-fit:contain}
+
+/* Single best image result; preview served through the backend proxy. */
+#pvd .resultGrid{grid-template-columns:minmax(0,1fr)!important;max-width:760px;margin-left:auto;margin-right:auto}
+#pvd .imageResult{width:100%;min-width:0}
+#pvd .imageResult img{width:100%;height:auto;max-height:720px;object-fit:contain;background:#f7f5f5}
+
 </style></head><body><div id="pvd"><header>
 <div class="pvdc pvdnav">
   <a class="pvdlogo" href="/">Pinterest<span> Downloader</span></a>
@@ -262,13 +273,104 @@ const $=id=>document.getElementById(id);
 function msg(t,c="info"){const e=$("status");e.className="status show "+c;e.textContent=t}
 function valid(v){try{const h=new URL(v).hostname.toLowerCase().replace(/^www\./,"");return h==="pin.it"||h==="pinterest.com"||h.endsWith(".pinterest.com")||/^pinterest\.[a-z.]+$/.test(h)||h.endsWith(".pinterest.co.uk")}catch(e){return false}}
 function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function downloadUrl(u){return API_BASE+"/api/download?url="+encodeURIComponent(u)+"&quality=best"}
-function render(media){
- const imgs=(Array.isArray(media)?media:[]).filter(x=>["image","photo","picture","gif"].includes(String(x.type||"").toLowerCase())&&(x.url||x.download_url));
- if(!imgs.length){$("result").innerHTML='<div class="status show info">No image URL was returned for this Pin. Try a public individual image Pin. If this happens for several public Pins, update the Render backend to the image-support version supplied with this page.</div>';$("result").classList.add("show");return}
- $("result").innerHTML='<div class="rhead"><h3>Available Pinterest Images</h3><span>'+imgs.length+' image option'+(imgs.length===1?'':'s')+'</span></div><div class="resultGrid">'+imgs.map((x,i)=>{const u=x.url||x.download_url;const label=x.quality||(x.width&&x.height?`${x.width} × ${x.height}`:`Image ${i+1}`);return '<article class="imageResult"><a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" alt="Pinterest image preview '+(i+1)+'" loading="lazy"></a><div class="imageMeta">'+esc(label)+'</div><a class="dl" href="'+esc(downloadUrl(u))+'" target="_blank" rel="noopener">Download Image</a></article>'}).join('')+'</div>';
- $("result").classList.add("show");msg("Pinterest image media found. Choose an image to download.","success")
+function normalizeImageUrl(raw){
+ let s=String(raw||"").trim().replace(/&amp;/gi,"&").replace(/\\\//g,"/");
+ // Pinterest page extraction can accidentally append encoded CSS/HTML after the image extension.
+ // Keep only the actual CDN URL through the first recognized image extension.
+ const m=s.match(/https?:\/\/(?:[a-z0-9-]+\.)?pinimg\.com\/[^"'<>\\\s]*?\.(?:jpe?g|png|webp|gif|avif|bmp)/i);
+ if(m)s=m[0];
+ try{
+  const u=new URL(s);
+  if(!/^https?:$/.test(u.protocol)||!/(^|\.)pinimg\.com$/i.test(u.hostname))return "";
+  if(!/\.(jpe?g|png|webp|gif|avif|bmp)$/i.test(u.pathname))return "";
+  return u.href;
+ }catch(e){return ""}
 }
-$("pvd-url").addEventListener("input",()=>{$("status").className="status";$ ("status").textContent=""});
-$("pvd-form").addEventListener("submit",async e=>{e.preventDefault();const url=$("pvd-url").value.trim(),b=$("submit");$("result").classList.remove("show");if(!valid(url)){msg("Please enter a valid Pinterest Pin URL or pin.it link.","error");return}b.disabled=true;b.textContent="Finding images...";msg("Checking the public Pin for available images...","info");try{const r=await fetch(API_ENDPOINT,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({url})});const raw=await r.text();let d;try{d=JSON.parse(raw)}catch{throw Error("The server returned an invalid response. Please try again.")}if(!r.ok||d.success===false)throw Error(d.message||d.detail||"The Pinterest link could not be processed.");if(!Array.isArray(d.media)||d.media.length===0){render([]);return}render(d.media)}catch(err){msg(err.message||"Unable to connect to the image downloader. Please try again.","error")}finally{b.disabled=false;b.textContent="Find Images"}});
+function proxyUrl(u){return API_BASE+"/api/preview?url="+encodeURIComponent(u)}
+function isImageCandidate(x){
+ const u=normalizeImageUrl(x.url||x.download_url||"");
+ const type=String(x.type||"").toLowerCase();
+ if(!u)return false;
+ if(/\/videos\/|\.mp4(?:[?#]|$)|\.m3u8(?:[?#]|$)|\.mov(?:[?#]|$)|\.webm(?:[?#]|$)|\.m4v(?:[?#]|$)/i.test(u))return false;
+ if(type && !["image","photo","picture","gif"].includes(type))return false;
+ return true;
+}
+function imageScore(x){
+ const u=normalizeImageUrl(x.url||x.download_url||"").toLowerCase();
+ const w=Number(x.width)||0,h=Number(x.height)||0;
+ let score=w*h;
+ if(/\/originals\//.test(u))score+=100000000;
+ if(/\/736x\//.test(u))score+=50000000;
+ if(/\/564x\//.test(u))score+=25000000;
+ if(/\/474x\//.test(u))score+=10000000;
+ if(/\/236x\//.test(u))score-=10000000;
+ return score;
+}
+function extensionFromMime(mime,url){
+ mime=String(mime||"").split(";")[0].toLowerCase();
+ if(mime==="image/jpeg"||mime==="image/jpg")return "jpg";
+ if(mime==="image/png")return "png";
+ if(mime==="image/webp")return "webp";
+ if(mime==="image/gif")return "gif";
+ if(mime==="image/avif")return "avif";
+ const path=String(url||"").split("?")[0].toLowerCase();
+ const m=path.match(/\.(jpe?g|png|webp|gif|avif|bmp)$/);
+ return m?(m[1]==="jpeg"?"jpg":m[1]):"jpg";
+}
+function render(media){
+ const imgs=(Array.isArray(media)?media:[])
+  .map(x=>({...x,url:normalizeImageUrl(x.url||x.download_url)}))
+  .filter(isImageCandidate)
+  .sort((a,b)=>imageScore(b)-imageScore(a));
+ if(!imgs.length){
+  $("result").innerHTML='<div class="status show info">No valid Pinterest image URL was found. Try a public individual image Pin.</div>';
+  $("result").classList.add("show");return;
+ }
+ const x=imgs[0],u=x.url;
+ const label=(x.width&&x.height)?`Best available · ${x.width} × ${x.height}`:"Original / best available";
+ const preview=proxyUrl(u);
+ $("result").innerHTML='<div class="rhead"><h3>Original / Best Available Image</h3><span>1 image</span></div><div class="resultGrid"><article class="imageResult"><div class="preview"><img id="pvd-best-image" src="'+esc(preview)+'" alt="Original or best available Pinterest image" loading="eager"></div><div class="imageMeta">'+esc(label)+'</div><button class="dl" id="pvd-download-image" type="button">Download Image</button></article></div>';
+ $("result").classList.add("show");
+ const img=$("pvd-best-image");
+ img.addEventListener("error",()=>{
+   img.alt="Pinterest could not provide this image through the preview service.";
+   img.style.minHeight="120px";img.style.background="#fff0f1";
+   msg("The backend could not load this image from Pinterest. The URL has been cleaned, so check the Render /api/preview endpoint or try another public Pin.","error");
+ });
+ $("pvd-download-image").addEventListener("click",async function(){
+  const btn=this,original=btn.textContent;
+  btn.disabled=true;btn.textContent="Preparing image...";
+  try{
+   const response=await fetch(preview,{method:"GET",mode:"cors",headers:{"Accept":"image/avif,image/webp,image/png,image/jpeg,image/gif,*/*"}});
+   if(!response.ok)throw new Error("Image preview service returned HTTP "+response.status+". Check the Render /api/preview endpoint.");
+   const blob=await response.blob();
+   if(!blob.type||!blob.type.toLowerCase().startsWith("image/"))throw new Error("The server did not return an image file. Download stopped to prevent an MP4 or invalid file.");
+   const ext=extensionFromMime(blob.type,u),objectUrl=URL.createObjectURL(blob),a=document.createElement("a");
+   a.href=objectUrl;a.download="pinterest-image."+ext;document.body.appendChild(a);a.click();a.remove();
+   setTimeout(()=>URL.revokeObjectURL(objectUrl),1500);
+   msg("Image downloaded as "+ext.toUpperCase()+".","success");
+  }catch(err){msg(err.message||"Could not download this image. Please try again.","error")}
+  finally{btn.disabled=false;btn.textContent=original}
+ });
+ msg("Best available Pinterest image found. Preview and download the image below.","success");
+}
+$("pvd-url").addEventListener("input",()=>{$("status").className="status";$("status").textContent=""});
+$("pvd-form").addEventListener("submit",async e=>{
+ e.preventDefault();
+ const url=$("pvd-url").value.trim(),b=$("submit");
+ $("result").classList.remove("show");$("result").innerHTML="";
+ if(!valid(url)){msg("Please enter a valid Pinterest Pin URL or pin.it link.","error");return}
+ b.disabled=true;b.textContent="Finding image...";
+ msg("Checking the public Pin for its best available image...","info");
+ try{
+  const r=await fetch(API_ENDPOINT,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({url})});
+  const raw=await r.text();let d;
+  try{d=JSON.parse(raw)}catch{throw Error("The server returned an invalid response. Please try again.")}
+  if(!r.ok||d.success===false)throw Error(d.message||d.detail||"The Pinterest link could not be processed.");
+  if(!Array.isArray(d.media)||d.media.length===0){render([]);return}
+  render(d.media);
+ }catch(err){msg(err.message||"Unable to connect to the image downloader. Please try again.","error")}
+ finally{b.disabled=false;b.textContent="Find Images"}
+});
+
 </script><script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebApplication","name":"Pinterest Image Downloader","url":"https://onlinefontgenerate.com/pinterest-image-downloader/","applicationCategory":"MultimediaApplication","operatingSystem":"Any","description":"A browser-based Pinterest image downloader for finding and downloading supported images from publicly accessible Pin URLs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}},{"@type":"HowTo","name":"How to Download a Picture From Pinterest","step":[{"@type":"HowToStep","name":"Copy the Pinterest Pin link","text":"Open a public Pin and copy its URL."},{"@type":"HowToStep","name":"Paste the URL","text":"Paste the Pin link into the Pinterest image downloader and click Find Images."},{"@type":"HowToStep","name":"Download the image","text":"Preview available image media and select Download Image."}]},{"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do I download images from Pinterest?","acceptedAnswer":{"@type":"Answer","text":"Copy the URL of a public Pinterest Pin, paste it into the downloader, click Find Images, then preview and download an available image."}},{"@type":"Question","name":"Can I download Pinterest images in HD?","acceptedAnswer":{"@type":"Answer","text":"You can download the highest-quality image exposed by the source. A high-resolution option cannot be guaranteed for every Pin."}},{"@type":"Question","name":"Do I need to install an app?","acceptedAnswer":{"@type":"Answer","text":"No. The web tool works in a modern browser on mobile and desktop devices."}}]}</script></body></html>
