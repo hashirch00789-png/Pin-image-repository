@@ -163,7 +163,7 @@ footer{background:#17171a;color:#aaa;padding:48px 0 24px}.fg{display:grid;grid-t
 #pvd .result{display:none;margin-top:18px}#pvd .result.show{display:block}
 #pvd .resultGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:16px}
 #pvd .imageResult{border:1px solid var(--bd);border-radius:16px;padding:12px;background:#fff;min-width:0}
-#pvd .imageResult img{width:100%;height:240px;object-fit:contain;background:#f7f5f5;border-radius:10px;display:block}
+#pvd .imageResult img{display:block;width:auto!important;height:auto!important;max-width:100%;max-height:720px;object-fit:contain;background:transparent;border-radius:10px;margin:0 auto}
 #pvd .imageResult .imageMeta{font-size:13px;color:var(--mut);margin:10px 0;overflow-wrap:anywhere}
 #pvd .dl{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;background:#e60023;color:#fff!important;padding:10px 14px;border-radius:9px;font-weight:750;font-size:14px}
 #pvd .dl:hover{background:#b9001d}
@@ -256,7 +256,7 @@ footer{background:#17171a;color:#aaa;padding:48px 0 24px}.fg{display:grid;grid-t
 <section><div class="pvdc"><div class="disc"><p><strong>Disclaimer:</strong> This is an independent third-party tool and is not affiliated with, endorsed by, or sponsored by Pinterest. Use it only with content you have permission to download or reuse.</p></div></div></section>
 </main>
 <footer><div class="pvdc"><div class="fg"><div><h3>Pinterest Image Downloader</h3><p>Download publicly accessible Pinterest photos and images online with a simple browser-based tool.</p></div><div><h3>Pinterest Tools</h3><a href="/pinterest-video-downloader/">Pinterest Video Downloader</a><a href="/pinterest-image-downloader/">Pinterest Image Downloader</a><a href="/pinterest-gif-downloader/">Pinterest GIF Downloader</a><a href="/pinterest-pin-downloader/">Pinterest Pin Downloader</a></div><div><h3>Website</h3><a href="/about/">About</a><a href="/contact/">Contact</a><a href="/privacy-policy/">Privacy Policy</a><a href="/terms-and-conditions/">Terms &amp; Conditions</a><a href="/disclaimer/">Disclaimer</a></div></div><div class="copy">© 2026 Online Font Generate. All rights reserved.</div></div></footer></div><script>(function(){const t=document.getElementById("pvd-mobile-toggle"),m=document.getElementById("pvd-mobile-menu");if(!t||!m)return;t.addEventListener("click",function(){const o=!m.classList.contains("is-open");m.classList.toggle("is-open",o);t.classList.toggle("is-open",o);t.setAttribute("aria-expanded",o?"true":"false");t.setAttribute("aria-label",o?"Close menu":"Open menu");m.setAttribute("aria-hidden",o?"false":"true")});m.querySelectorAll("a").forEach(a=>a.addEventListener("click",function(){m.classList.remove("is-open");t.classList.remove("is-open");t.setAttribute("aria-expanded","false");t.setAttribute("aria-label","Open menu");m.setAttribute("aria-hidden","true")}));window.addEventListener("resize",function(){if(window.innerWidth>760){m.classList.remove("is-open");t.classList.remove("is-open");t.setAttribute("aria-expanded","false");m.setAttribute("aria-hidden","true")}})})();</script><script>
-const API_BASE="https://pinterest-resolver.onrender.com";
+const API_BASE="https://pin-image-repository.onrender.com";
 const API_ENDPOINT=API_BASE+"/api/resolve";
 const $=id=>document.getElementById(id);
 function msg(t,c="info"){const e=$("status");e.className="status show "+c;e.textContent=t}
@@ -285,7 +285,7 @@ function render(media){
  };
  const best=imgs.slice().sort((a,b)=>score(b)-score(a))[0];
  const u=best.url||best.download_url;
- const preview=u;
+ const preview=API_BASE+"/api/preview?url="+encodeURIComponent(u);
  const file=downloadUrl(u);
 
  $("result").innerHTML=
