@@ -573,6 +573,47 @@ async def api_resolve(body: ResolveBody, request: Request):
         raise HTTPException(422, str(exc))
 
 
+
+
+@app.get("/api/preview")
+async def api_preview(url: str, request: Request):
+    """Serve Pinterest CDN images inline through the backend for reliable browser previews."""
+    rate_limit(request)
+    if not is_allowed_media_url(url):
+        raise HTTPException(400, "Only Pinterest CDN media URLs are allowed.")
+
+    headers = {
+        "User-Agent": UA,
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Referer": "https://www.pinterest.com/",
+    }
+    async with httpx.AsyncClient(follow_redirects=True, timeout=25, headers=headers) as client:
+        probe = await client.get(url, headers={**headers, "Range": "bytes=0-0"})
+        if probe.status_code >= 400:
+            raise HTTPException(probe.status_code, "Pinterest CDN refused the image request.")
+        content_type = probe.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not content_type.startswith("image/"):
+            raise HTTPException(415, "The selected Pinterest media URL did not return an image.")
+
+    async def iterator():
+        async with httpx.AsyncClient(follow_redirects=True, timeout=None, headers=headers) as client:
+            async with client.stream("GET", url) as upstream:
+                if upstream.status_code >= 400:
+                    return
+                async for chunk in upstream.aiter_bytes(256 * 1024):
+                    yield chunk
+
+    return StreamingResponse(
+        iterator(),
+        headers={
+            "Content-Type": content_type,
+            "Content-Disposition": 'inline; filename="pinterest-image"',
+            "Cache-Control": "public, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+        },
+        media_type=content_type,
+    )
+
 @app.get("/api/download")
 async def api_download(url: str, request: Request):
     rate_limit(request)
