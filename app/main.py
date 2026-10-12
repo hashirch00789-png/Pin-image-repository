@@ -17,7 +17,7 @@ from pydantic import BaseModel, HttpUrl
 from playwright.async_api import async_playwright
 
 APP_NAME = "Pinterest Media Resolver"
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 ALLOWED_PIN_HOSTS = {
     "pinterest.com", "www.pinterest.com",
@@ -187,6 +187,7 @@ def collect_urls_from_obj(obj: Any) -> list[str]:
 def extract_media(html: str, network_urls: list[str]) -> dict:
     video_candidates: set[str] = set()
     image_candidates: set[str] = set()
+    primary_image_candidates: set[str] = set()
     poster_candidates: set[str] = set()
 
     # 1. Network-observed video requests. This catches videos rendered after
@@ -252,6 +253,10 @@ def extract_media(html: str, network_urls: list[str]) -> dict:
             continue
         content = clean_url(unescape(content))
         if "og:image" in prop and "pinimg.com" in content:
+            # og:image is Pinterest's pin-level preview image. Keep it separate
+            # from the many unrelated pinimg URLs embedded in Relay/SSR JSON,
+            # which can include UI assets and gradient placeholders.
+            primary_image_candidates.add(content)
             poster_candidates.add(content)
         if "og:video" in prop and looks_like_mp4(content):
             video_candidates.add(content)
@@ -284,6 +289,7 @@ def extract_media(html: str, network_urls: list[str]) -> dict:
 
     return {
         "videos": list(dict.fromkeys(videos))[:12],
+        "primary_images": list(dict.fromkeys(primary_image_candidates))[:5],
         "images": list(dict.fromkeys(images))[:20],
         "posters": list(dict.fromkeys(posters))[:10],
     }
@@ -456,7 +462,11 @@ def build_result(final_url: str, media: dict) -> dict:
             "message": "Pinterest video found with the highest available progressive MP4 options returned by Pinterest.",
         }
 
-    images = list(dict.fromkeys(media["images"] or media["posters"]))
+    # Prefer the pin-level og:image before generic pinimg URLs found elsewhere
+    # in the HTML/SSR payload. Generic candidates can be UI assets/placeholders.
+    images = list(dict.fromkeys(
+        media.get("primary_images") or media["images"] or media["posters"]
+    ))
     # Prefer Pinterest's originals path, then larger common image variants.
     def image_rank(url: str) -> tuple:
         v = url.lower()
