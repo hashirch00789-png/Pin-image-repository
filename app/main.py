@@ -1,114 +1,95 @@
-    application.state.http = httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT,
-        limits=httpx.Limits(max_connections=40, max_keepalive_connections=20, keepalive_expiry=30))
-    application.state.resolve_semaphore = asyncio.Semaphore(RESOLVE_CONCURRENCY)
-    application.state.browser_semaphore = asyncio.Semaphore(BROWSER_CONCURRENCY)
-    application.state.playwright = None
-    application.state.browser = None
+"""Fast Pinterest media resolver with HTTP-first extraction and reusable Chromium."""
+import asyncio
+import json
+import logging
+import mimetypes
+import os
+import re
+import time
+from collections import deque
+from contextlib import asynccontextmanager
+from html import unescape
+from typing import Any
+from urllib.parse import quote, urlparse, urlunparse
+
+import httpx
+from bs4 import BeautifulSoup
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, HttpUrl
+from playwright.async_api import async_playwright
+
+APP_NAME = "Pinterest Media Resolver"
+VERSION = "1.5.0"
+LOG = logging.getLogger("pinterest-resolver")
+
+ALLOWED_PIN_HOSTS = {
+    "pinterest.com", "www.pinterest.com", "pin.it",
+    "pinterest.co.uk", "www.pinterest.co.uk", "pinterest.ca", "www.pinterest.ca",
+    "pinterest.de", "www.pinterest.de", "pinterest.fr", "www.pinterest.fr",
+    "pinterest.es", "www.pinterest.es", "pinterest.it", "www.pinterest.it",
+    "pinterest.com.au", "www.pinterest.com.au", "pinterest.jp", "www.pinterest.jp",
+}
+ALLOWED_CDN_HOSTS = {"i.pinimg.com", "v1.pinimg.com", "v2.pinimg.com", "v3.pinimg.com", "v.pinimg.com"}
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+
+RATE_WINDOW = 60
+RATE_MAX = 30
+HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "13"))
+SHORT_URL_TIMEOUT = float(os.getenv("SHORT_URL_TIMEOUT", "10"))
+BROWSER_TIMEOUT_MS = int(os.getenv("BROWSER_TIMEOUT_MS", "22000"))
+BROWSER_SETTLE_MS = int(os.getenv("BROWSER_SETTLE_MS", "1100"))
+RESOLVE_TIMEOUT = float(os.getenv("RESOLVE_TIMEOUT", "48"))
+BROWSER_CONCURRENCY = int(os.getenv("BROWSER_CONCURRENCY", "2"))
+RESOLVE_CONCURRENCY = int(os.getenv("RESOLVE_CONCURRENCY", "4"))
+_rate_hits: dict[str, deque[float]] = {}
+
+
+class ResolveBody(BaseModel):
+    url: HttpUrl
+
+
+def clean_url(value: str) -> str:
+    return value.replace("\\/", "/").strip().rstrip("\\,;)")
+
+
+def host_of(value: str) -> str:
     try:
-        application.state.playwright = await async_playwright().start()
-        application.state.browser = await application.state.playwright.chromium.launch(headless=True, args=[
-            "--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled",
-            "--disable-background-networking", "--disable-background-timer-throttling", "--disable-renderer-backgrounding"])
-        LOG.info("Reusable Chromium started")
+        return (urlparse(value).hostname or "").lower().rstrip(".")
     except Exception:
-        LOG.exception("Chromium startup failed; HTTP extraction will remain available")
-    try:
-        yield
-    finally:
-        if application.state.browser:
-            await application.state.browser.close()
-        if application.state.playwright:
-            await application.state.playwright.stop()
-        await application.state.http.aclose()
+        return ""
 
 
-app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
-                   allow_methods=["*"], allow_headers=["*"], max_age=86400)
+def is_allowed_pinterest_url(value: str) -> bool:
+    p = urlparse(value)
+    return p.scheme in {"http", "https"} and host_of(value) in ALLOWED_PIN_HOSTS
 
 
-@app.get("/")
-async def root():
-    return {"service": APP_NAME, "version": VERSION, "status": "ok", "endpoint": "/api/resolve",
-            "download": "/api/download?url=<pinimg-url>"}
+def is_allowed_media_url(value: str) -> bool:
+    p = urlparse(value)
+    return p.scheme in {"http", "https"} and host_of(value) in ALLOWED_CDN_HOSTS
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": VERSION, "chromium": bool(getattr(app.state, "browser", None) and app.state.browser.is_connected())}
+def normalize_pin_url(value: str) -> str:
+    p = urlparse(value)
+    return urlunparse(("https", p.netloc.lower(), p.path, "", "", ""))
 
 
-@app.get("/api/cors-test")
-async def cors_test():
-    return {"success": True, "status": "ok", "cors": "enabled", "version": VERSION,
-            "message": "Browser requests to this public API are allowed."}
+def looks_like_mp4(value: str) -> bool:
+    v = clean_url(value).lower()
+    return "pinimg.com/videos/" in v and (".mp4" in v or "/mp4/" in v or "720p" in v or "1080p" in v) and ".m3u8" not in v
 
 
-@app.post("/api/resolve")
-async def api_resolve(body: ResolveBody, request: Request):
-    rate_limit(request)
-    url = str(body.url)
-    if not is_allowed_pinterest_url(url): raise HTTPException(400, "Only public Pinterest and pin.it URLs are supported.")
-    try:
-        async with app.state.resolve_semaphore:
-            result = await asyncio.wait_for(resolve(url), timeout=RESOLVE_TIMEOUT)
-        return JSONResponse(result)
-    except asyncio.TimeoutError:
-        raise HTTPException(504, "Pinterest took too long to respond. Please try again.")
-    except Exception as exc:
-        raise HTTPException(422, str(exc)[:500])
-
-
-async def stream_cdn(url: str, headers: dict, chunk_size: int):
-    client = httpx.AsyncClient(follow_redirects=True, timeout=None, headers=headers)
-    try:
-        async with client.stream("GET", url) as upstream:
-            if upstream.status_code >= 400:
-                raise HTTPException(upstream.status_code, "Pinterest CDN refused the media request.")
-            async for chunk in upstream.aiter_bytes(chunk_size): yield chunk
-    finally:
-        await client.aclose()
-
-
-@app.get("/api/preview")
-async def api_preview(url: str, request: Request):
-    rate_limit(request)
-    if not is_allowed_media_url(url): raise HTTPException(400, "Only Pinterest CDN media URLs are allowed.")
-    headers = {"User-Agent": UA, "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-               "Referer": "https://www.pinterest.com/"}
-    # One streamed request replaces the old Range probe plus second full request.
-    async def checked_iterator():
-        client = httpx.AsyncClient(follow_redirects=True, timeout=20, headers=headers)
-        try:
-            async with client.stream("GET", url) as upstream:
-                if upstream.status_code >= 400: raise HTTPException(upstream.status_code, "Pinterest CDN refused the image request.")
-                content_type = upstream.headers.get("content-type", "").split(";")[0].strip().lower()
-                if not content_type.startswith("image/"): raise HTTPException(415, "The selected Pinterest media URL did not return an image.")
-                async for chunk in upstream.aiter_bytes(256 * 1024): yield chunk
-        finally: await client.aclose()
-    guessed_type = mimetypes.guess_type(urlparse(url).path)[0] or "image/jpeg"
-    return StreamingResponse(checked_iterator(), media_type=guessed_type, headers={"Content-Disposition": 'inline; filename="pinterest-image"',
-        "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff"})
-
-
-@app.get("/api/download")
-async def api_download(url: str, request: Request):
-    rate_limit(request)
-    if not is_allowed_media_url(url): raise HTTPException(400, "Only Pinterest CDN media URLs are allowed.")
-    headers = {"User-Agent": UA, "Accept": "*/*", "Referer": "https://www.pinterest.com/"}
-    if request.headers.get("range"): headers["Range"] = request.headers["range"]
-    client = httpx.AsyncClient(follow_redirects=True, timeout=20, headers=headers)
-    try:
-        probe = await client.head(url)
-        if probe.status_code in {405, 501}:
-            probe = await client.get(url, headers={**headers, "Range": "bytes=0-0"})
-        if probe.status_code >= 400: raise HTTPException(probe.status_code, "Pinterest CDN refused the media request.")
-        content_type = probe.headers.get("content-type", "application/octet-stream")
-        content_length = probe.headers.get("content-length")
-        accept_ranges = probe.headers.get("accept-ranges", "bytes")
-    finally:
-        await client.aclose()
-    response_headers = {"Content-Type": content_type, "Content-Disposition": 'attachment; filename="pinterest-media"',
-                        "Cache-Control": "private, max-age=300", "Accept-Ranges": accept_ranges}
-    # Do not forward the probe's Content-Length: the streaming response is a new request.
-    return StreamingResponse(stream_cdn(url, headers, 1024 * 1024), headers=response_headers)
+def quality_score(url: str) -> tuple:
+    v = url.lower()
+    score = 1000 if ".mp4" in v else 0
+    if any(x in v for x in ("720p", "v_720p", "_720w")): score += 700
+    if "1080" in v: score += 900
+    if "1440" in v or "2160" in v: score += 1100
+    if "480" in v: score += 450
+    if "360" in v: score += 300
+    if "hls" in v or ".m3u8" in v: score -= 10000
+    if "mobile" in v or "hevc" in v: score -= 100
+    return score, len(v)
